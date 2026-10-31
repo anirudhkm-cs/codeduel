@@ -1,0 +1,28 @@
+{
+  "name": "codeduel",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Real-time competitive coding duels",
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,magenta \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
+    "build": "npm run build -w apps/server && npm run build -w apps/web",
+    "typecheck": "npm run typecheck -w apps/server && npm run typecheck -w apps/web",
+    "test": "npm run test -w apps/server",
+    "db:migrate": "npm run db:migrate -w apps/server",
+    "db:seed": "npm run db:seed -w apps/server",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "judge0:up": "docker compose -f infra/judge0/docker-compose.yml up -d",
+    "judge0:down": "docker compose -f infra/judge0/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

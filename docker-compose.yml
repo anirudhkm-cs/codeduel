@@ -1,0 +1,27 @@
+# App infrastructure for local development.
+# Judge0 lives in its own compose file (infra/judge0) because it needs
+# privileged containers and its own Postgres/Redis.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: codeduel
+      POSTGRES_PASSWORD: codeduel
+      POSTGRES_DB: codeduel
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codeduel"]
+      interval: 5s
+      retries: 10
+
+  # Not used until Milestone 2 (job queue) and 3 (rooms), but ready to go.
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
