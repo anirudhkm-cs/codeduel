@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { SubmissionResult, TestResult, Verdict } from "../types";
+import type { Submission, TestResult, Verdict } from "../types";
 
 export const VERDICT_LABEL: Record<Verdict, string> = {
   accepted: "Accepted",
@@ -21,20 +21,42 @@ const SHORT: Record<Verdict, string> = {
   internal_error: "IE",
 };
 
-interface Props {
-  result: SubmissionResult | null;
-  error: string | null;
-  pending: "run" | "submit" | null;
+/** Where an in-flight submission is: still being sent, or its server-side status. */
+export interface Progress {
+  mode: "run" | "submit";
+  status: "sending" | "queued" | "running";
 }
 
-export function ResultPanel({ result, error, pending }: Props) {
+const STAGES = ["Queued", "Running", "Done"];
+
+interface Props {
+  result: Submission | null;
+  error: string | null;
+  pending: Progress | null;
+}
+
+export function ResultPanel({ result: submission, error, pending }: Props) {
   const [selected, setSelected] = useState<number | null>(null);
 
   if (pending) {
+    const stage = pending.status === "running" ? 1 : 0;
+    const message =
+      pending.status !== "running"
+        ? "Waiting for a judge…"
+        : pending.mode === "run"
+          ? "Running sample tests…"
+          : "Judging against hidden tests…";
     return (
       <div className="results">
-        <div className="judging">
-          <span className="pulse" /> {pending === "run" ? "Running sample tests…" : "Judging against hidden tests…"}
+        <ol className="stages" aria-label="Submission progress">
+          {STAGES.map((label, i) => (
+            <li key={label} className={i < stage ? "past" : i === stage ? "current" : ""}>
+              {label}
+            </li>
+          ))}
+        </ol>
+        <div className="judging" role="status">
+          <span className="pulse" /> {message}
         </div>
       </div>
     );
@@ -46,7 +68,8 @@ export function ResultPanel({ result, error, pending }: Props) {
       </div>
     );
   }
-  if (!result) {
+  const result = submission?.result;
+  if (!submission || !result) {
     return (
       <div className="results">
         <p className="muted">Run your code against the examples, then submit it for the hidden tests.</p>
@@ -65,7 +88,7 @@ export function ResultPanel({ result, error, pending }: Props) {
       <div className="verdict-row">
         <span className={`verdict ${ok ? "ok" : "bad"}`}>{VERDICT_LABEL[result.verdict]}</span>
         <span className="muted">
-          {result.passed}/{result.total} {result.mode === "run" ? "sample" : ""} tests passed
+          {result.passed}/{result.total} {submission.mode === "run" ? "sample" : ""} tests passed
           {result.maxTimeMs !== null && ` · max ${result.maxTimeMs} ms`}
         </span>
       </div>

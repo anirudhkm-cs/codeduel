@@ -43,9 +43,18 @@ export interface TestResult {
   stderr?: string;
 }
 
-export interface SubmissionResult {
+export type SubmissionStatus = "queued" | "running" | "done" | "failed";
+
+/** GET /api/submissions/:id and each event on its /events stream. */
+export interface Submission {
   id: string;
   mode: "run" | "submit";
+  status: SubmissionStatus;
+  result?: JudgeResult;
+  error?: string;
+}
+
+export interface JudgeResult {
   verdict: Verdict;
   passed: number;
   total: number;

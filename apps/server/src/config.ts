@@ -8,6 +8,9 @@ const schema = z.object({
   JUDGE0_URL: z.string().url().default("http://localhost:2358"),
   JUDGE0_AUTH_TOKEN: z.string().optional(),
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
+  REDIS_URL: z.string().default("redis://localhost:6379"),
+  /** Submissions each worker process judges at once. */
+  WORKER_CONCURRENCY: z.coerce.number().int().positive().default(2),
 });
 
 export type Config = z.infer<typeof schema>;

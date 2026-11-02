@@ -20,8 +20,16 @@ jobs:
           --health-cmd "pg_isready -U codeduel"
           --health-interval 5s
           --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-retries 10
     env:
       DATABASE_URL: postgres://codeduel:codeduel@localhost:5432/codeduel
+      REDIS_URL: redis://localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

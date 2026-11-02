@@ -17,7 +17,7 @@ services:
       interval: 5s
       retries: 10
 
-  # Not used until Milestone 2 (job queue) and 3 (rooms), but ready to go.
+  # Job queue + submission status updates, rooms later.
   redis:
     image: redis:7
     ports:

@@ -2,9 +2,9 @@ import Editor from "@monaco-editor/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { useParams } from "react-router-dom";
-import { api } from "../api";
-import { ResultPanel } from "../components/ResultPanel";
-import type { Language, Problem, SubmissionResult } from "../types";
+import { api, watchSubmission } from "../api";
+import { ResultPanel, type Progress } from "../components/ResultPanel";
+import type { Language, Problem, Submission } from "../types";
 
 // Drafts are a per-browser convenience; storage may be unavailable, so never let it throw.
 const draftKey = (slug: string, lang: string) => `codeduel:draft:${slug}:${lang}`;
@@ -29,13 +29,17 @@ export function ProblemPage() {
   const [languages, setLanguages] = useState<Language[]>([]);
   const [langId, setLangId] = useState("python");
   const [code, setCode] = useState("");
-  const [result, setResult] = useState<SubmissionResult | null>(null);
-  const [pending, setPending] = useState<"run" | "submit" | null>(null);
+  const [result, setResult] = useState<Submission | null>(null);
+  const [pending, setPending] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Stops following the in-flight submission when leaving the problem
+  const watching = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setProblem(null);
     setResult(null);
+    setPending(null);
+    watching.current?.abort();
     Promise.all([api.problem(slug), api.languages()])
       .then(([p, langs]) => {
         setProblem(p);
@@ -61,14 +65,25 @@ export function ProblemPage() {
   const send = useCallback(
     async (mode: "run" | "submit") => {
       if (pending) return;
-      setPending(mode);
+      const controller = new AbortController();
+      watching.current = controller;
+      setPending({ mode, status: "sending" });
       setError(null);
       try {
-        setResult(await api.submit({ problemSlug: slug, language: langId, source: code, mode }));
+        const queued = await api.submit({ problemSlug: slug, language: langId, source: code, mode });
+        const final = await watchSubmission(
+          queued.id,
+          (s) => {
+            if (s.status === "queued" || s.status === "running") setPending({ mode, status: s.status });
+          },
+          controller.signal,
+        );
+        if (final.status === "failed") setError(final.error ?? "The judge failed. Please try again.");
+        else setResult(final);
       } catch (e) {
-        setError((e as Error).message);
+        if ((e as Error).name !== "AbortError") setError((e as Error).message);
       } finally {
-        setPending(null);
+        if (!controller.signal.aborted) setPending(null);
       }
     },
     [pending, slug, langId, code],
@@ -87,6 +102,8 @@ export function ProblemPage() {
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, []);
+
+  useEffect(() => () => watching.current?.abort(), []);
 
   if (error && !problem) return <main className="list-page"><p className="error-box">{error}</p></main>;
   if (!problem) return <main className="list-page"><p className="muted">Loading…</p></main>;
@@ -139,10 +156,10 @@ export function ProblemPage() {
           </button>
           <div className="spacer" />
           <button className="secondary" disabled={!!pending} onClick={() => send("run")} title="Ctrl/⌘ + Enter">
-            {pending === "run" ? "Running…" : "Run samples"}
+            {pending?.mode === "run" ? "Running…" : "Run samples"}
           </button>
           <button className="primary" disabled={!!pending} onClick={() => send("submit")} title="Ctrl/⌘ + Shift + Enter">
-            {pending === "submit" ? "Judging…" : "Submit"}
+            {pending?.mode === "submit" ? "Judging…" : "Submit"}
           </button>
         </div>
 

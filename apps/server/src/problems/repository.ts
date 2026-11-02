@@ -19,8 +19,16 @@ export interface Problem extends ProblemSummary {
 export interface ProblemRepository {
   list(): Promise<ProblemSummary[]>;
   getBySlug(slug: string): Promise<Problem | null>;
+  getById(id: number): Promise<Problem | null>;
   getTests(problemId: number, opts: { samplesOnly: boolean }): Promise<TestCase[]>;
 }
+
+const PROBLEM_COLUMNS = `
+  SELECT id, slug, title, difficulty,
+         statement_md AS "statementMd",
+         time_limit_ms AS "timeLimitMs",
+         memory_limit_kb AS "memoryLimitKb"
+  FROM problems`;
 
 export class PgProblemRepository implements ProblemRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -34,14 +42,12 @@ export class PgProblemRepository implements ProblemRepository {
   }
 
   async getBySlug(slug: string): Promise<Problem | null> {
-    const { rows } = await this.pool.query(
-      `SELECT id, slug, title, difficulty,
-              statement_md AS "statementMd",
-              time_limit_ms AS "timeLimitMs",
-              memory_limit_kb AS "memoryLimitKb"
-       FROM problems WHERE slug = $1`,
-      [slug],
-    );
+    const { rows } = await this.pool.query(`${PROBLEM_COLUMNS} WHERE slug = $1`, [slug]);
+    return rows[0] ?? null;
+  }
+
+  async getById(id: number): Promise<Problem | null> {
+    const { rows } = await this.pool.query(`${PROBLEM_COLUMNS} WHERE id = $1`, [id]);
     return rows[0] ?? null;
   }
 

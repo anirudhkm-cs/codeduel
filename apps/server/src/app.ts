@@ -1,18 +1,44 @@
 import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
 import { z } from "zod";
-import { judge } from "./judge/judge.js";
+import type { JudgeMode, JudgeResult } from "./judge/judge.js";
 import { LANGUAGE_IDS, LANGUAGES } from "./judge/languages.js";
-import type { Executor, LanguageId } from "./judge/types.js";
+import type { LanguageId } from "./judge/types.js";
 import type { ProblemRepository } from "./problems/repository.js";
-import type { SubmissionRepository } from "./submissions/repository.js";
+import type { SubmissionQueue } from "./submissions/queue.js";
+import type { Submission, SubmissionRepository, SubmissionStatus } from "./submissions/repository.js";
+import type { SubmissionUpdates } from "./submissions/updates.js";
 
 export interface AppDeps {
   problems: ProblemRepository;
   submissions: SubmissionRepository;
-  executor: Executor;
+  queue: SubmissionQueue;
+  updates: SubmissionUpdates;
+  /** Which executor the workers use, for /api/health. */
+  executorName: string;
   corsOrigin?: string;
 }
+
+/** What clients see of a submission. Never includes the source or internal errors. */
+export interface SubmissionView {
+  id: string;
+  mode: JudgeMode;
+  status: SubmissionStatus;
+  result?: JudgeResult;
+  error?: string;
+}
+
+export function toView(s: Submission): SubmissionView {
+  return {
+    id: s.id,
+    mode: s.mode,
+    status: s.status,
+    ...(s.result ? { result: s.result } : {}),
+    ...(s.status === "failed" ? { error: "The judge failed to run this submission. Please try again." } : {}),
+  };
+}
+
+const isFinished = (status: SubmissionStatus) => status === "done" || status === "failed";
 
 const MAX_SOURCE_BYTES = 64 * 1024;
 
@@ -38,7 +64,7 @@ export function createApp(deps: AppDeps): express.Express {
   app.use(express.json({ limit: "100kb" }));
 
   app.get("/api/health", (_req, res) => {
-    res.json({ ok: true, executor: deps.executor.name });
+    res.json({ ok: true, executor: deps.executorName });
   });
 
   app.get("/api/languages", (_req, res) => {
@@ -71,12 +97,10 @@ export function createApp(deps: AppDeps): express.Express {
   );
 
   /**
-   * Judge a submission.
+   * Queue a submission for judging. Returns 202 with its id right away;
+   * follow progress via GET /api/submissions/:id or its /events stream.
    *   mode=run    -> sample tests only, full input/output shown
    *   mode=submit -> all tests, hidden test data never returned
-   *
-   * Milestone 1 judges synchronously in the request. Milestone 2 moves this
-   * onto a BullMQ queue so slow submissions don't tie up the API.
    */
   app.post(
     "/api/submissions",
@@ -94,32 +118,110 @@ export function createApp(deps: AppDeps): express.Express {
         return;
       }
 
-      const tests = await deps.problems.getTests(problem.id, { samplesOnly: mode === "run" });
-      const result = await judge({
-        executor: deps.executor,
-        language,
-        source,
-        tests,
-        limits: { timeLimitMs: problem.timeLimitMs, memoryLimitKb: problem.memoryLimitKb },
-      });
+      const saved = await deps.submissions.create({ problemId: problem.id, language, source, mode });
+      try {
+        await deps.queue.enqueue(saved.id);
+      } catch (err) {
+        console.error(`Could not enqueue submission ${saved.id}`, err);
+        await deps.submissions.fail(saved.id, `enqueue failed: ${(err as Error).message}`);
+        res.status(503).json({ error: "The judge is busy or offline. Please try again." });
+        return;
+      }
 
-      const saved = await deps.submissions.create({
-        problemId: problem.id,
-        language,
-        source,
-        mode,
-        verdict: result.verdict,
-        passed: result.passed,
-        total: result.total,
-        maxTimeMs: result.maxTimeMs,
-      });
+      res.status(202).json({ id: saved.id, mode, status: "queued" } satisfies SubmissionView);
+    }),
+  );
 
-      res.json({ id: saved.id, mode, ...result });
+  app.get(
+    "/api/submissions/:id",
+    wrap(async (req, res) => {
+      const submission = await deps.submissions.get(req.params.id!);
+      if (!submission) {
+        res.status(404).json({ error: "Submission not found" });
+        return;
+      }
+      res.json(toView(submission));
+    }),
+  );
+
+  /**
+   * Server-Sent Events: sends the submission's current state, then a new
+   * snapshot whenever it changes, and closes once it is done or failed.
+   */
+  app.get(
+    "/api/submissions/:id/events",
+    wrap(async (req, res) => {
+      const id = req.params.id!;
+      let closed = false;
+      let lastSent = "";
+
+      const send = async () => {
+        const submission = await deps.submissions.get(id);
+        if (closed || !submission) return;
+        const data = JSON.stringify(toView(submission));
+        if (data !== lastSent) {
+          res.write(`data: ${data}\n\n`);
+          lastSent = data;
+        }
+        if (isFinished(submission.status)) finish();
+      };
+
+      // Sends run one at a time, and only after the headers are written.
+      let headersWritten!: () => void;
+      let chain = new Promise<void>((resolve) => (headersWritten = resolve));
+      const queueSend = () => {
+        chain = chain.then(send).catch((err) => {
+          console.error(`Submission stream ${id} failed`, err);
+          finish();
+        });
+      };
+
+      // Subscribe before the first read so no update can slip in between.
+      const unsubscribe = deps.updates.subscribe((updatedId) => {
+        if (updatedId === id) queueSend();
+      });
+      const heartbeat = setInterval(() => res.write(": ping\n\n"), 15_000);
+      const finish = () => {
+        if (closed) return;
+        closed = true;
+        unsubscribe();
+        clearInterval(heartbeat);
+        res.end();
+      };
+      res.on("close", finish);
+
+      let exists: boolean;
+      try {
+        exists = (await deps.submissions.get(id)) !== null;
+      } catch (err) {
+        finish();
+        throw err;
+      }
+      if (!exists) {
+        closed = true;
+        unsubscribe();
+        clearInterval(heartbeat);
+        res.status(404).json({ error: "Submission not found" });
+        return;
+      }
+
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no", // stop nginx-style proxies from buffering the stream
+      });
+      queueSend();
+      headersWritten();
     }),
   );
 
   const onError: ErrorRequestHandler = (err, _req, res, _next) => {
     console.error(err);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     res.status(500).json({ error: "Something went wrong while judging. Please try again." });
   };
   app.use(onError);
